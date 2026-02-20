@@ -5,22 +5,43 @@ const axios = require("axios");
 const Database = require("better-sqlite3");
 
 // =====================================================
-// APP CONFIG (SET NAME FIRST)
+// 1️⃣ SET APP NAME FIRST (CRITICAL)
 // =====================================================
 app.setName("GeoSentinelService");
-if (process.platform === "darwin") app.dock?.hide();
 
+// Disable GPU completely (prevents cache errors on Windows)
+app.disableHardwareAcceleration();
 app.commandLine.appendSwitch("disable-gpu");
 
+// =====================================================
+// 2️⃣ FORCE SAFE WRITABLE PATHS
+// =====================================================
+const safeUserPath = path.join(app.getPath("appData"), "GeoSentinelService");
+const safeCachePath = path.join(safeUserPath, "Cache");
+
+// Ensure folders exist BEFORE Electron uses them
+if (!fs.existsSync(safeUserPath)) {
+    fs.mkdirSync(safeUserPath, { recursive: true });
+}
+if (!fs.existsSync(safeCachePath)) {
+    fs.mkdirSync(safeCachePath, { recursive: true });
+}
+
+// Force Electron to use safe writable locations
+app.setPath("userData", safeUserPath);
+app.setPath("cache", safeCachePath);
+
+// =====================================================
+// CONFIG
+// =====================================================
 const { API_URL } = require("./package.json");
 const API = API_URL || "https://backend-1-opx1.onrender.com";
 
 let mainWindow = null;
 let authToken = null;
 let retryDelay = 10000;
-
-let configPath;
 let db;
+let configPath;
 let dbPath;
 
 // =====================================================
@@ -54,17 +75,10 @@ app.on("window-all-closed", (e) => e.preventDefault());
 // =====================================================
 app.whenReady().then(() => {
 
-    const userDataPath = app.getPath("userData");
+    configPath = path.join(safeUserPath, "config.json");
+    dbPath = path.join(safeUserPath, "local.db");
 
-    // Ensure folder exists
-    if (!fs.existsSync(userDataPath)) {
-        fs.mkdirSync(userDataPath, { recursive: true });
-    }
-
-    configPath = path.join(userDataPath, "config.json");
-    dbPath = path.join(userDataPath, "local.db");
-
-    // Initialize SQLite AFTER folder exists
+    // Initialize SQLite
     db = new Database(dbPath);
 
     db.prepare(`
@@ -76,10 +90,10 @@ app.whenReady().then(() => {
         )
     `).run();
 
-    handleInstallerArguments();
+    handleStationArgument();
     createWindow();
 
-    // Auto start on reboot
+    // Auto start at boot
     app.setLoginItemSettings({
         openAtLogin: true
     });
@@ -90,12 +104,12 @@ app.whenReady().then(() => {
 // =====================================================
 // HANDLE STATION ARGUMENT
 // =====================================================
-function handleInstallerArguments() {
+function handleStationArgument() {
     const stationArg = process.argv.find(arg =>
         arg.startsWith("--station=")
     );
 
-    if (stationArg && configPath) {
+    if (stationArg) {
         const stationId = stationArg.split("=")[1];
         if (stationId) {
             fs.writeFileSync(
@@ -107,12 +121,12 @@ function handleInstallerArguments() {
 }
 
 // =====================================================
-// CONFIG
+// GET STATION ID
 // =====================================================
 function getStationId() {
-    if (!configPath || !fs.existsSync(configPath)) return null;
+    if (!fs.existsSync(configPath)) return null;
     try {
-        return JSON.parse(fs.readFileSync(configPath, "utf-8")).stationId;
+        return JSON.parse(fs.readFileSync(configPath)).stationId;
     } catch {
         return null;
     }
