@@ -1,16 +1,25 @@
 const { app, BrowserWindow, ipcMain, session } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const os = require("os");
 const axios = require("axios");
 const Database = require("better-sqlite3");
 
-// =====================================
-// APP CONFIG
-// =====================================
-app.setName("GeoSentinelService");
-app.dock?.hide(); // macOS hide dock
+// =====================================================
+// FORCE SAFE USER PATHS (CRITICAL FOR WINDOWS)
+// =====================================================
+const userBasePath = path.join(os.homedir(), "AppData", "Roaming", "GeoSentinelService");
 
-// Use injected API_URL from electron-builder
+app.setPath("userData", userBasePath);
+app.setPath("cache", path.join(userBasePath, "Cache"));
+app.commandLine.appendSwitch("disable-gpu");
+
+// =====================================================
+// APP CONFIG
+// =====================================================
+app.setName("GeoSentinelService");
+app.dock?.hide();
+
 const { API_URL } = require("./package.json");
 const API = API_URL || "https://backend-1-opx1.onrender.com";
 
@@ -21,9 +30,9 @@ let retryDelay = 10000;
 const configPath = path.join(app.getPath("userData"), "config.json");
 const dbPath = path.join(app.getPath("userData"), "local.db");
 
-// =====================================
-// HANDLE INSTALLER ARGUMENT
-// =====================================
+// =====================================================
+// HANDLE STATION ARGUMENT
+// =====================================================
 function handleInstallerArguments() {
     const stationArg = process.argv.find(arg =>
         arg.startsWith("--station=")
@@ -31,8 +40,8 @@ function handleInstallerArguments() {
 
     if (stationArg) {
         const stationId = stationArg.split("=")[1];
-
         if (stationId) {
+            fs.mkdirSync(app.getPath("userData"), { recursive: true });
             fs.writeFileSync(
                 configPath,
                 JSON.stringify({ stationId }, null, 2)
@@ -41,9 +50,9 @@ function handleInstallerArguments() {
     }
 }
 
-// =====================================
+// =====================================================
 // SQLITE INIT
-// =====================================
+// =====================================================
 const db = new Database(dbPath);
 
 db.prepare(`
@@ -55,9 +64,9 @@ CREATE TABLE IF NOT EXISTS locations (
 )
 `).run();
 
-// =====================================
+// =====================================================
 // CREATE HIDDEN WINDOW
-// =====================================
+// =====================================================
 function createWindow() {
     mainWindow = new BrowserWindow({
         show: false,
@@ -66,7 +75,8 @@ function createWindow() {
         webPreferences: {
             preload: path.join(__dirname, "preload.js"),
             contextIsolation: true,
-            nodeIntegration: false
+            nodeIntegration: false,
+            sandbox: true
         }
     });
 
@@ -77,67 +87,51 @@ function createWindow() {
             callback(permission === "geolocation");
         }
     );
-
-    mainWindow.on("closed", () => {
-        mainWindow = null;
-    });
 }
 
-// Prevent app from quitting
-app.on("window-all-closed", (e) => {
-    e.preventDefault();
-});
+app.on("window-all-closed", (e) => e.preventDefault());
 
-// =====================================
+// =====================================================
 // APP READY
-// =====================================
+// =====================================================
 app.whenReady().then(() => {
-
     handleInstallerArguments();
     createWindow();
 
-    // Auto start after reboot
     app.setLoginItemSettings({
         openAtLogin: true
     });
 
-    setTimeout(startSyncWorker, Math.random() * 20000);
+    setTimeout(startSyncWorker, 5000);
 });
 
-// =====================================
+// =====================================================
 // CONFIG
-// =====================================
+// =====================================================
 function getStationId() {
     if (!fs.existsSync(configPath)) return null;
-    const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-    return config.stationId || null;
+    return JSON.parse(fs.readFileSync(configPath, "utf-8")).stationId;
 }
 
-ipcMain.handle("getStationId", async () => {
-    return getStationId();
-});
+ipcMain.handle("getStationId", async () => getStationId());
 
-// =====================================
+// =====================================================
 // LOGIN
-// =====================================
+// =====================================================
 ipcMain.handle("autoLogin", async (_, stationId) => {
     try {
-        const res = await axios.post(`${API}/api/auth/auto-login`, {
-            stationId
-        });
-
+        const res = await axios.post(`${API}/api/auth/auto-login`, { stationId });
         authToken = res.data.token;
         retryDelay = 10000;
         return true;
-
     } catch {
         return false;
     }
 });
 
-// =====================================
-// LOCATION SAVE (OFFLINE FIRST)
-// =====================================
+// =====================================================
+// SAVE LOCATION
+// =====================================================
 ipcMain.handle("sendLocation", async (_, { lat, lng }) => {
 
     const result = db.prepare(`
@@ -159,18 +153,14 @@ ipcMain.handle("sendLocation", async (_, { lat, lng }) => {
         db.prepare("DELETE FROM locations WHERE id = ?")
             .run(insertedId);
 
-    } catch {
-        // Silent fallback
-    }
+    } catch { }
 });
 
-// =====================================
+// =====================================================
 // HEARTBEAT
-// =====================================
+// =====================================================
 ipcMain.handle("sendHeartbeat", async () => {
-
     if (!authToken) return;
-
     try {
         await axios.post(
             `${API}/api/heartbeat`,
@@ -180,34 +170,27 @@ ipcMain.handle("sendHeartbeat", async () => {
     } catch { }
 });
 
-// =====================================
+// =====================================================
 // AUTO RELOGIN
-// =====================================
+// =====================================================
 async function tryReLogin() {
-
     const stationId = getStationId();
     if (!stationId) return false;
 
     try {
-        const res = await axios.post(`${API}/api/auth/auto-login`, {
-            stationId
-        });
-
+        const res = await axios.post(`${API}/api/auth/auto-login`, { stationId });
         authToken = res.data.token;
         return true;
-
     } catch {
         return false;
     }
 }
 
-// =====================================
+// =====================================================
 // SYNC WORKER
-// =====================================
+// =====================================================
 async function startSyncWorker() {
-
     while (true) {
-
         await new Promise(r => setTimeout(r, retryDelay));
 
         if (!authToken) {
@@ -219,12 +202,7 @@ async function startSyncWorker() {
         }
 
         try {
-
-            const rows = db.prepare(`
-                SELECT * FROM locations
-                LIMIT 20
-            `).all();
-
+            const rows = db.prepare(`SELECT * FROM locations LIMIT 20`).all();
             if (rows.length === 0) {
                 retryDelay = 10000;
                 continue;
@@ -244,7 +222,6 @@ async function startSyncWorker() {
             });
 
             tx();
-
             retryDelay = 10000;
 
         } catch {
