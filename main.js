@@ -1,35 +1,16 @@
 const { app, BrowserWindow, ipcMain, session } = require("electron");
 const path = require("path");
 const fs = require("fs");
-const os = require("os");
 const axios = require("axios");
 const Database = require("better-sqlite3");
 
 // =====================================================
-// SAFE USER DIRECTORY SETUP (CRITICAL FOR WINDOWS)
-// =====================================================
-const userBasePath = path.join(
-    os.homedir(),
-    "AppData",
-    "Roaming",
-    "GeoSentinelService"
-);
-
-// Ensure directory exists BEFORE anything else
-if (!fs.existsSync(userBasePath)) {
-    fs.mkdirSync(userBasePath, { recursive: true });
-}
-
-// Force Electron paths
-app.setPath("userData", userBasePath);
-app.setPath("cache", path.join(userBasePath, "Cache"));
-app.commandLine.appendSwitch("disable-gpu");
-
-// =====================================================
-// APP CONFIG
+// APP CONFIG (SET NAME FIRST)
 // =====================================================
 app.setName("GeoSentinelService");
 if (process.platform === "darwin") app.dock?.hide();
+
+app.commandLine.appendSwitch("disable-gpu");
 
 const { API_URL } = require("./package.json");
 const API = API_URL || "https://backend-1-opx1.onrender.com";
@@ -38,44 +19,12 @@ let mainWindow = null;
 let authToken = null;
 let retryDelay = 10000;
 
-const configPath = path.join(userBasePath, "config.json");
-const dbPath = path.join(userBasePath, "local.db");
+let configPath;
+let db;
+let dbPath;
 
 // =====================================================
-// HANDLE STATION ARGUMENT
-// =====================================================
-function handleInstallerArguments() {
-    const stationArg = process.argv.find(arg =>
-        arg.startsWith("--station=")
-    );
-
-    if (stationArg) {
-        const stationId = stationArg.split("=")[1];
-        if (stationId) {
-            fs.writeFileSync(
-                configPath,
-                JSON.stringify({ stationId }, null, 2)
-            );
-        }
-    }
-}
-
-// =====================================================
-// SQLITE INIT
-// =====================================================
-const db = new Database(dbPath);
-
-db.prepare(`
-CREATE TABLE IF NOT EXISTS locations (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    latitude REAL NOT NULL,
-    longitude REAL NOT NULL,
-    timestamp INTEGER NOT NULL
-)
-`).run();
-
-// =====================================================
-// CREATE HIDDEN WINDOW (Required for Geolocation)
+// CREATE HIDDEN WINDOW
 // =====================================================
 function createWindow() {
     mainWindow = new BrowserWindow({
@@ -85,8 +34,7 @@ function createWindow() {
         webPreferences: {
             preload: path.join(__dirname, "preload.js"),
             contextIsolation: true,
-            nodeIntegration: false,
-            sandbox: true
+            nodeIntegration: false
         }
     });
 
@@ -105,9 +53,33 @@ app.on("window-all-closed", (e) => e.preventDefault());
 // APP READY
 // =====================================================
 app.whenReady().then(() => {
+
+    const userDataPath = app.getPath("userData");
+
+    // Ensure folder exists
+    if (!fs.existsSync(userDataPath)) {
+        fs.mkdirSync(userDataPath, { recursive: true });
+    }
+
+    configPath = path.join(userDataPath, "config.json");
+    dbPath = path.join(userDataPath, "local.db");
+
+    // Initialize SQLite AFTER folder exists
+    db = new Database(dbPath);
+
+    db.prepare(`
+        CREATE TABLE IF NOT EXISTS locations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            latitude REAL NOT NULL,
+            longitude REAL NOT NULL,
+            timestamp INTEGER NOT NULL
+        )
+    `).run();
+
     handleInstallerArguments();
     createWindow();
 
+    // Auto start on reboot
     app.setLoginItemSettings({
         openAtLogin: true
     });
@@ -116,10 +88,29 @@ app.whenReady().then(() => {
 });
 
 // =====================================================
+// HANDLE STATION ARGUMENT
+// =====================================================
+function handleInstallerArguments() {
+    const stationArg = process.argv.find(arg =>
+        arg.startsWith("--station=")
+    );
+
+    if (stationArg && configPath) {
+        const stationId = stationArg.split("=")[1];
+        if (stationId) {
+            fs.writeFileSync(
+                configPath,
+                JSON.stringify({ stationId }, null, 2)
+            );
+        }
+    }
+}
+
+// =====================================================
 // CONFIG
 // =====================================================
 function getStationId() {
-    if (!fs.existsSync(configPath)) return null;
+    if (!configPath || !fs.existsSync(configPath)) return null;
     try {
         return JSON.parse(fs.readFileSync(configPath, "utf-8")).stationId;
     } catch {
@@ -144,9 +135,11 @@ ipcMain.handle("autoLogin", async (_, stationId) => {
 });
 
 // =====================================================
-// SAVE LOCATION (Offline First)
+// SAVE LOCATION
 // =====================================================
 ipcMain.handle("sendLocation", async (_, { lat, lng }) => {
+
+    if (!db) return;
 
     const result = db.prepare(`
         INSERT INTO locations (latitude, longitude, timestamp)

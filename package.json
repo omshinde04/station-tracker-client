@@ -58,7 +58,7 @@
       "perMachine": false,
       "allowElevation": false,
       "createDesktopShortcut": false,
-      "createStartMenuShortcut": false,
+      "createStartMenuShortcut": true,
       "runAfterFinish": false,
       "deleteAppDataOnUninstall": false
     }
