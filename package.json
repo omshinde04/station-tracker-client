@@ -1,0 +1,67 @@
+{
+  "name": "geo-sentinel-service",
+  "version": "1.0.0",
+  "description": "Geo Sentinel Background Location Monitoring Service",
+  "main": "main.js",
+  "type": "commonjs",
+  "author": "Om Shinde",
+  "license": "ISC",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "rebuild": "electron-rebuild -f -w better-sqlite3",
+    "build": "npm run rebuild && electron-builder"
+  },
+  "dependencies": {
+    "axios": "^1.13.5",
+    "better-sqlite3": "^12.6.2"
+  },
+  "devDependencies": {
+    "electron": "^40.4.1",
+    "electron-builder": "^24.13.3",
+    "electron-rebuild": "^3.2.9"
+  },
+  "build": {
+    "appId": "com.geosentinel.service",
+    "productName": "GeoSentinelService",
+    "extraMetadata": {
+      "API_URL": "https://backend-1-opx1.onrender.com"
+    },
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "**/*",
+      "!dist/*"
+    ],
+    "mac": {
+      "category": "public.app-category.utilities",
+      "target": [
+        "dmg"
+      ],
+      "hardenedRuntime": false
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "GeoSentinelInstaller.exe"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": true,
+      "allowElevation": true,
+      "createDesktopShortcut": false,
+      "createStartMenuShortcut": false,
+      "runAfterFinish": false,
+      "allowToChangeInstallationDirectory": false,
+      "deleteAppDataOnUninstall": false
+    }
+  }
+}
