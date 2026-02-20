@@ -6,10 +6,21 @@ const axios = require("axios");
 const Database = require("better-sqlite3");
 
 // =====================================================
-// FORCE SAFE USER PATHS (CRITICAL FOR WINDOWS)
+// SAFE USER DIRECTORY SETUP (CRITICAL FOR WINDOWS)
 // =====================================================
-const userBasePath = path.join(os.homedir(), "AppData", "Roaming", "GeoSentinelService");
+const userBasePath = path.join(
+    os.homedir(),
+    "AppData",
+    "Roaming",
+    "GeoSentinelService"
+);
 
+// Ensure directory exists BEFORE anything else
+if (!fs.existsSync(userBasePath)) {
+    fs.mkdirSync(userBasePath, { recursive: true });
+}
+
+// Force Electron paths
 app.setPath("userData", userBasePath);
 app.setPath("cache", path.join(userBasePath, "Cache"));
 app.commandLine.appendSwitch("disable-gpu");
@@ -18,7 +29,7 @@ app.commandLine.appendSwitch("disable-gpu");
 // APP CONFIG
 // =====================================================
 app.setName("GeoSentinelService");
-app.dock?.hide();
+if (process.platform === "darwin") app.dock?.hide();
 
 const { API_URL } = require("./package.json");
 const API = API_URL || "https://backend-1-opx1.onrender.com";
@@ -27,8 +38,8 @@ let mainWindow = null;
 let authToken = null;
 let retryDelay = 10000;
 
-const configPath = path.join(app.getPath("userData"), "config.json");
-const dbPath = path.join(app.getPath("userData"), "local.db");
+const configPath = path.join(userBasePath, "config.json");
+const dbPath = path.join(userBasePath, "local.db");
 
 // =====================================================
 // HANDLE STATION ARGUMENT
@@ -41,7 +52,6 @@ function handleInstallerArguments() {
     if (stationArg) {
         const stationId = stationArg.split("=")[1];
         if (stationId) {
-            fs.mkdirSync(app.getPath("userData"), { recursive: true });
             fs.writeFileSync(
                 configPath,
                 JSON.stringify({ stationId }, null, 2)
@@ -65,7 +75,7 @@ CREATE TABLE IF NOT EXISTS locations (
 `).run();
 
 // =====================================================
-// CREATE HIDDEN WINDOW
+// CREATE HIDDEN WINDOW (Required for Geolocation)
 // =====================================================
 function createWindow() {
     mainWindow = new BrowserWindow({
@@ -110,7 +120,11 @@ app.whenReady().then(() => {
 // =====================================================
 function getStationId() {
     if (!fs.existsSync(configPath)) return null;
-    return JSON.parse(fs.readFileSync(configPath, "utf-8")).stationId;
+    try {
+        return JSON.parse(fs.readFileSync(configPath, "utf-8")).stationId;
+    } catch {
+        return null;
+    }
 }
 
 ipcMain.handle("getStationId", async () => getStationId());
@@ -130,7 +144,7 @@ ipcMain.handle("autoLogin", async (_, stationId) => {
 });
 
 // =====================================================
-// SAVE LOCATION
+// SAVE LOCATION (Offline First)
 // =====================================================
 ipcMain.handle("sendLocation", async (_, { lat, lng }) => {
 
