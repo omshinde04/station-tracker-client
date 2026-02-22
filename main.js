@@ -17,9 +17,7 @@ let mainWindow;
 
 // Focus existing instance
 app.on("second-instance", () => {
-    if (mainWindow) {
-        mainWindow.focus();
-    }
+    if (mainWindow) mainWindow.focus();
 });
 
 // =====================================================
@@ -33,18 +31,13 @@ app.commandLine.appendSwitch("disable-gpu-shader-disk-cache");
 axios.defaults.timeout = 15000;
 
 // =====================================================
-// SAFE USER DATA PATH
+// SAFE USER DATA PATH (CROSS SAFE)
 // =====================================================
-const baseAppData = process.env.APPDATA;
-const safeUserPath = path.join(baseAppData, "GeoSentinelService");
+const safeUserPath = path.join(app.getPath("appData"), "GeoSentinelService");
 const safeCachePath = path.join(safeUserPath, "Cache");
 
-if (!fs.existsSync(safeUserPath)) {
-    fs.mkdirSync(safeUserPath, { recursive: true });
-}
-if (!fs.existsSync(safeCachePath)) {
-    fs.mkdirSync(safeCachePath, { recursive: true });
-}
+fs.mkdirSync(safeUserPath, { recursive: true });
+fs.mkdirSync(safeCachePath, { recursive: true });
 
 app.setPath("userData", safeUserPath);
 app.setPath("cache", safeCachePath);
@@ -58,7 +51,7 @@ let retryDelay = 10000;
 let db;
 let configPath;
 let dbPath;
-let workerStarted = false;
+let workerRunning = false;
 
 // =====================================================
 // GLOBAL ERROR LOGGING
@@ -103,62 +96,37 @@ app.on("window-all-closed", e => e.preventDefault());
 function enableAutoStart() {
     if (process.platform !== "win32") return;
 
-    // Electron method
     app.setLoginItemSettings({
         openAtLogin: true,
         path: process.execPath
     });
 
-    // Registry fallback (most reliable)
-    const registryPath =
-        "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-
-    const execPath = `"${process.execPath}"`;
-
     const { exec } = require("child_process");
-
     exec(
-        `reg add "${registryPath}" /v GeoSentinelService /t REG_SZ /d ${execPath} /f`,
+        `reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v GeoSentinelService /t REG_SZ /d "${process.execPath}" /f`,
         () => { }
     );
 }
 
 // =====================================================
-// APP READY
+// CONFIG MANAGEMENT (FIXED)
 // =====================================================
-app.whenReady().then(() => {
+function ensureConfigFile() {
+    if (!fs.existsSync(configPath)) {
+        fs.writeFileSync(configPath, JSON.stringify({}, null, 2));
+    }
+}
 
-    configPath = path.join(safeUserPath, "config.json");
-    dbPath = path.join(safeUserPath, "local.db");
-
-    db = new Database(dbPath);
-
-    db.prepare(`
-        CREATE TABLE IF NOT EXISTS locations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            latitude REAL NOT NULL,
-            longitude REAL NOT NULL,
-            timestamp INTEGER NOT NULL
-        )
-    `).run();
-
-    handleStationArgument();
-    createWindow();
-
-    enableAutoStart();
-
-    setTimeout(() => {
-        if (!workerStarted) {
-            workerStarted = true;
-            startSyncWorker();
-        }
-    }, 5000);
-});
-
-// =====================================================
-// HANDLE STATION ARGUMENT
-// =====================================================
 function handleStationArgument() {
+    ensureConfigFile();
+
+    let config = {};
+    try {
+        config = JSON.parse(fs.readFileSync(configPath));
+    } catch {
+        config = {};
+    }
+
     const stationArg = process.argv.find(arg =>
         arg.startsWith("--station=")
     );
@@ -166,17 +134,17 @@ function handleStationArgument() {
     if (stationArg) {
         const stationId = stationArg.split("=")[1];
         if (stationId) {
-            fs.writeFileSync(
-                configPath,
-                JSON.stringify({ stationId }, null, 2)
-            );
+            config.stationId = stationId;
+            fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+            console.log("Station ID saved:", stationId);
         }
+    }
+
+    if (!config.stationId) {
+        console.error("CRITICAL: Station ID missing in config.json");
     }
 }
 
-// =====================================================
-// IPC HANDLERS
-// =====================================================
 function getStationId() {
     if (!fs.existsSync(configPath)) return null;
     try {
@@ -186,6 +154,9 @@ function getStationId() {
     }
 }
 
+// =====================================================
+// IPC HANDLERS
+// =====================================================
 ipcMain.handle("getStationId", async () => getStationId());
 
 ipcMain.handle("autoLogin", async (_, stationId) => {
@@ -194,7 +165,8 @@ ipcMain.handle("autoLogin", async (_, stationId) => {
         authToken = res.data.token;
         retryDelay = 10000;
         return true;
-    } catch {
+    } catch (err) {
+        console.error("AutoLogin failed:", err.response?.data || err.message);
         return false;
     }
 });
@@ -222,7 +194,9 @@ ipcMain.handle("sendLocation", async (_, { lat, lng }) => {
         db.prepare("DELETE FROM locations WHERE id = ?")
             .run(insertedId);
 
-    } catch { }
+    } catch (err) {
+        console.error("sendLocation failed:", err.message);
+    }
 });
 
 ipcMain.handle("sendHeartbeat", async () => {
@@ -233,7 +207,9 @@ ipcMain.handle("sendHeartbeat", async () => {
             {},
             { headers: { Authorization: authToken } }
         );
-    } catch { }
+    } catch (err) {
+        console.error("Heartbeat failed:", err.message);
+    }
 });
 
 // =====================================================
@@ -241,41 +217,42 @@ ipcMain.handle("sendHeartbeat", async () => {
 // =====================================================
 async function tryReLogin() {
     const stationId = getStationId();
-    if (!stationId) return false;
+    if (!stationId) {
+        console.error("No stationId found in config.json");
+        return false;
+    }
 
     try {
         const res = await axios.post(`${API}/api/auth/auto-login`, { stationId });
         authToken = res.data.token;
+        retryDelay = 10000;
+        console.log("Auto re-login success");
         return true;
-    } catch {
+    } catch (err) {
+        console.error("Auto re-login failed:", err.response?.data || err.message);
         return false;
     }
 }
 
 // =====================================================
-// SYNC WORKER
+// SAFE SYNC WORKER (NO while(true))
 // =====================================================
-async function startSyncWorker() {
-    while (true) {
-        await new Promise(r => setTimeout(r, retryDelay));
+async function syncWorker() {
+    if (!workerRunning) return;
 
-        try {
+    try {
 
-            if (!authToken) {
-                const success = await tryReLogin();
-                if (!success) {
-                    retryDelay = Math.min(retryDelay * 2, 60000);
-                    continue;
-                }
+        if (!authToken) {
+            const success = await tryReLogin();
+            if (!success) {
+                retryDelay = Math.min(retryDelay * 2, 60000);
+                return scheduleNextRun();
             }
+        }
 
-            const rows = db.prepare(`SELECT * FROM locations LIMIT 20`).all();
+        const rows = db.prepare(`SELECT * FROM locations LIMIT 20`).all();
 
-            if (rows.length === 0) {
-                retryDelay = 10000;
-                continue;
-            }
-
+        if (rows.length > 0) {
             await axios.post(
                 `${API}/api/location/batch`,
                 { records: rows },
@@ -290,12 +267,61 @@ async function startSyncWorker() {
             });
 
             tx();
-
-            retryDelay = 10000;
-
-        } catch {
-            authToken = null;
-            retryDelay = Math.min(retryDelay * 2, 60000);
         }
+
+        retryDelay = 10000;
+
+    } catch (err) {
+        authToken = null;
+        retryDelay = Math.min(retryDelay * 2, 60000);
+        console.error("Sync worker error:", err.message);
     }
+
+    scheduleNextRun();
 }
+
+function scheduleNextRun() {
+    setTimeout(syncWorker, retryDelay);
+}
+
+function startSyncWorker() {
+    if (workerRunning) return;
+    workerRunning = true;
+    scheduleNextRun();
+}
+
+// =====================================================
+// APP READY
+// =====================================================
+app.whenReady().then(() => {
+
+    configPath = path.join(safeUserPath, "config.json");
+    dbPath = path.join(safeUserPath, "local.db");
+
+    db = new Database(dbPath);
+
+    db.prepare(`
+        CREATE TABLE IF NOT EXISTS locations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            latitude REAL NOT NULL,
+            longitude REAL NOT NULL,
+            timestamp INTEGER NOT NULL
+        )
+    `).run();
+
+    handleStationArgument();
+    createWindow();
+    enableAutoStart();
+
+    setTimeout(() => {
+        startSyncWorker();
+    }, 5000);
+});
+
+// =====================================================
+// GRACEFUL SHUTDOWN
+// =====================================================
+app.on("before-quit", () => {
+    workerRunning = false;
+    if (db) db.close();
+});
