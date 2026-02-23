@@ -31,6 +31,16 @@ if (!fs.existsSync(safeUserPath)) {
     fs.mkdirSync(safeUserPath, { recursive: true });
 }
 
+// ================= GET STATION ID =================
+function getStationId() {
+    if (!fs.existsSync(configPath)) return null;
+    try {
+        return JSON.parse(fs.readFileSync(configPath)).stationId;
+    } catch {
+        return null;
+    }
+}
+
 // ================= CLIENT LOGGER =================
 async function sendLog(level, message) {
     try {
@@ -42,7 +52,7 @@ async function sendLog(level, message) {
             message
         });
     } catch {
-        // Never crash service due to logging failure
+        // never crash service due to logging failure
     }
 }
 
@@ -82,16 +92,6 @@ function handleStationArgument() {
             JSON.stringify({ stationId }, null, 2)
         );
         console.log("Station config created:", stationId);
-    }
-}
-
-// ================= GET STATION ID =================
-function getStationId() {
-    if (!fs.existsSync(configPath)) return null;
-    try {
-        return JSON.parse(fs.readFileSync(configPath)).stationId;
-    } catch {
-        return null;
     }
 }
 
@@ -163,10 +163,16 @@ function startSyncWorker() {
             authToken = null;
         }
 
-    }, 10000); // Every 10 seconds
+    }, 10000);
 }
 
 // ================= IPC =================
+
+// FIXED: getStationId handler (prevents your error)
+ipcMain.handle("getStationId", async () => {
+    return getStationId();
+});
+
 ipcMain.handle("sendLocation", async (_, { lat, lng }) => {
 
     if (!db) return;
