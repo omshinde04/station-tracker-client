@@ -19,7 +19,7 @@ let syncInterval = null;
 
 const API =
     require("./package.json").API_URL ||
-    "https://backend-1-opx1.onrender.com";
+    "https://backend-kduh.onrender.com";
 
 axios.defaults.timeout = 15000;
 
